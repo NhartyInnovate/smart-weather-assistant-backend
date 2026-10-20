@@ -163,6 +163,24 @@ http://localhost:8000
 
 # 📡 API Endpoints
 
+## Health Check
+
+Lightweight endpoint used for automated uptime monitoring (e.g., UptimeRobot) and service availability checks. It performs no external calls or database queries.
+
+```http
+GET /health
+```
+
+### Successful Response
+
+```json
+{
+  "status": "ok"
+}
+```
+
+---
+
 ## Get Weather
 
 ```http

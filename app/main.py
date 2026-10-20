@@ -35,4 +35,11 @@ def home():
     }
 
 
+@app.get("/health")
+def health():
+    return {
+        "status": "ok"
+    }
+
+
 app.include_router(weather_router)
