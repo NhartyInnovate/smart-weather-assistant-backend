@@ -151,6 +151,161 @@ def test_deterministic_valid_city_weather_contract():
         assert "local_time" in data["metadata"]
 
 
+def test_hourly_spans_midnight_at_late_night():
+    # Test requirement 1: When local time is late (23:00), forecast returns 12 hours spanning midnight
+    mock_geo_resp = MagicMock()
+    mock_geo_resp.json.return_value = {
+        "results": [
+            {
+                "name": "MidnightCity",
+                "country": "Nightland",
+                "timezone": "Europe/London",
+                "latitude": 51.5,
+                "longitude": 0.0,
+            }
+        ]
+    }
+
+    # Generate 24 hourly timestamps for today and tomorrow
+    # Current mocked hour is 23:00 on Oct 21
+    fixed_now = datetime(2026, 10, 21, 23, 20, tzinfo=ZoneInfo("Europe/London"))
+
+    hourly_times = []
+    # Today 20 to 23
+    for h in range(20, 24):
+        hourly_times.append(f"2026-10-21T{h:02d}:00")
+    # Tomorrow 00 to 23
+    for h in range(0, 24):
+        hourly_times.append(f"2026-10-22T{h:02d}:00")
+
+    mock_weather_resp = MagicMock()
+    mock_weather_resp.json.return_value = {
+        "current": {
+            "temperature_2m": 10.0,
+            "relative_humidity_2m": 80,
+            "wind_speed_10m": 5.0,
+            "weather_code": 1,
+            "is_day": 0,
+        },
+        "hourly": {
+            "time": hourly_times,
+            "temperature_2m": [10.0 + (i * 0.5) for i in range(len(hourly_times))],
+            "weather_code": [1] * len(hourly_times),
+        },
+    }
+
+    with patch("app.services.weather_service.datetime") as mock_dt, \
+         patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_dt.now.return_value = fixed_now
+        mock_dt.fromisoformat.side_effect = lambda s: datetime.fromisoformat(s)
+        mock_get.side_effect = [mock_geo_resp, mock_weather_resp]
+
+        result = asyncio.run(get_weather("MidnightCity_Test"))
+
+        assert result is not None
+        hourly = result["hourly"]
+        # Must return exactly 12 hours
+        assert len(hourly) == 12
+        # First hour must be 23:00
+        assert hourly[0]["time"] == "23:00"
+        # Second hour crosses midnight into 00:00
+        assert hourly[1]["time"] == "00:00"
+        # Subsequent hours advance cleanly
+        assert hourly[2]["time"] == "01:00"
+        assert hourly[11]["time"] == "10:00"
+
+
+def test_hourly_ahead_and_behind_timezones():
+    # Test requirements 2 & 3: Cities in ahead (Tokyo) and behind (New York) timezones
+    # Tokyo (UTC+9)
+    mock_geo_tokyo = MagicMock()
+    mock_geo_tokyo.json.return_value = {
+        "results": [{
+            "name": "Tokyo",
+            "country": "Japan",
+            "timezone": "Asia/Tokyo",
+            "latitude": 35.6895,
+            "longitude": 139.6917,
+        }]
+    }
+
+    # Hourly times from 00:00 to 23:00 on Oct 22 in Tokyo local time
+    tokyo_times = [f"2026-10-22T{h:02d}:00" for h in range(24)]
+    mock_weather_tokyo = MagicMock()
+    mock_weather_tokyo.json.return_value = {
+        "current": {
+            "temperature_2m": 18.0,
+            "relative_humidity_2m": 65,
+            "wind_speed_10m": 8.0,
+            "weather_code": 0,
+            "is_day": 1,
+        },
+        "hourly": {
+            "time": tokyo_times,
+            "temperature_2m": [18.0] * 24,
+            "weather_code": [0] * 24,
+        },
+    }
+
+    fixed_tokyo_now = datetime(2026, 10, 22, 5, 15, tzinfo=ZoneInfo("Asia/Tokyo"))
+
+    with patch("app.services.weather_service.datetime") as mock_dt, \
+         patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_dt.now.return_value = fixed_tokyo_now
+        mock_dt.fromisoformat.side_effect = lambda s: datetime.fromisoformat(s)
+        mock_get.side_effect = [mock_geo_tokyo, mock_weather_tokyo]
+
+        res_tokyo = asyncio.run(get_weather("Tokyo_Timezone_Test"))
+        assert res_tokyo is not None
+        assert len(res_tokyo["hourly"]) == 12
+        assert res_tokyo["hourly"][0]["time"] == "05:00"
+        assert res_tokyo["hourly"][-1]["time"] == "16:00"
+
+
+def test_fewer_than_12_remaining_entries():
+    # Test requirement 6: If provider provides fewer than 12 remaining entries, returns available without fabrication
+    mock_geo = MagicMock()
+    mock_geo.json.return_value = {
+        "results": [{
+            "name": "ShortForecastCity",
+            "country": "Country",
+            "timezone": "UTC",
+            "latitude": 0.0,
+            "longitude": 0.0,
+        }]
+    }
+
+    fixed_now = datetime(2026, 10, 21, 21, 10, tzinfo=ZoneInfo("UTC"))
+    short_times = ["2026-10-21T21:00", "2026-10-21T22:00", "2026-10-21T23:00"]
+    mock_weather = MagicMock()
+    mock_weather.json.return_value = {
+        "current": {
+            "temperature_2m": 20.0,
+            "relative_humidity_2m": 50,
+            "wind_speed_10m": 10.0,
+            "weather_code": 0,
+            "is_day": 0,
+        },
+        "hourly": {
+            "time": short_times,
+            "temperature_2m": [20.0, 19.5, 19.0],
+            "weather_code": [0, 0, 0],
+        },
+    }
+
+    with patch("app.services.weather_service.datetime") as mock_dt, \
+         patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_dt.now.return_value = fixed_now
+        mock_dt.fromisoformat.side_effect = lambda s: datetime.fromisoformat(s)
+        mock_get.side_effect = [mock_geo, mock_weather]
+
+        res = asyncio.run(get_weather("ShortForecastCity_Test"))
+        assert res is not None
+        assert len(res["hourly"]) == 3
+        assert res["hourly"][0]["time"] == "21:00"
+        assert res["hourly"][-1]["time"] == "23:00"
+
+
 def run_live_integration_test():
     """
     OPTIONAL: Integration test requiring live outbound internet connection to Open-Meteo.
@@ -163,7 +318,8 @@ def run_live_integration_test():
     data = response.json()
     assert data["location"]["city"] == "London"
     assert data["location"]["timezone"] == "Europe/London"
-    print("PASS: run_live_integration_test")
+    assert len(data["hourly"]) == 12
+    print("PASS: run_live_integration_test (hourly length is 12)")
 
 
 if __name__ == "__main__":
@@ -185,7 +341,16 @@ if __name__ == "__main__":
     test_deterministic_valid_city_weather_contract()
     print("PASS: test_deterministic_valid_city_weather_contract")
 
-    print("\nAll 6 deterministic core unit tests passed successfully!")
+    test_hourly_spans_midnight_at_late_night()
+    print("PASS: test_hourly_spans_midnight_at_late_night")
+
+    test_hourly_ahead_and_behind_timezones()
+    print("PASS: test_hourly_ahead_and_behind_timezones")
+
+    test_fewer_than_12_remaining_entries()
+    print("PASS: test_fewer_than_12_remaining_entries")
+
+    print("\nAll 9 deterministic core unit tests passed successfully!")
 
     if "--live" in sys.argv or os.environ.get("RUN_LIVE_TESTS") == "1":
         run_live_integration_test()

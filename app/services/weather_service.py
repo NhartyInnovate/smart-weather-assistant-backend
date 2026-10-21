@@ -18,7 +18,7 @@ async def get_weather(city: str):
     cache_key = city.lower().strip()
     if cache_key in weather_cache:
         return weather_cache[cache_key]
-        
+
     async with httpx.AsyncClient(timeout=10) as client:
 
         # Step 1: Get city coordinates
@@ -73,19 +73,26 @@ async def get_weather(city: str):
         condition = get_weather_condition(current["weather_code"])
         advice = generate_advice(condition, current["temperature_2m"])
 
-        # Process hourly data for the rest of today
+        # Process hourly data for the next 12 available hours from current hour
         hourly = weather_data.get("hourly", {})
         hourly_forecast = []
-        
+
         if hourly and "time" in hourly:
             times = hourly["time"]
             temps = hourly["temperature_2m"]
             codes = hourly["weather_code"]
-            
+
+            current_hour_floor = now.replace(minute=0, second=0, microsecond=0)
+
             for t, temp, code in zip(times, temps, codes):
-                dt = datetime.fromisoformat(t).replace(tzinfo=tz)
-                # Only include hours in the future (or current hour) but within the same calendar day
-                if dt >= now.replace(minute=0, second=0, microsecond=0) and dt.date() == now.date():
+                parsed_dt = datetime.fromisoformat(t)
+                if parsed_dt.tzinfo is None:
+                    dt = parsed_dt.replace(tzinfo=tz)
+                else:
+                    dt = parsed_dt.astimezone(tz)
+
+                # Include future entries starting from current hour floor across midnight
+                if dt >= current_hour_floor:
                     hourly_forecast.append({
                         "time": dt.strftime("%H:%M"),
                         "temperature": temp,
@@ -125,6 +132,6 @@ async def get_weather(city: str):
                 "last_updated": local_time,
             },
         }
-        
+
         weather_cache[cache_key] = result
         return result
