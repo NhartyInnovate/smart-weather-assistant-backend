@@ -4,7 +4,7 @@ from app.utils.weather_utils import (
     generate_advice,
 )
 from datetime import datetime
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from cachetools import TTLCache
 
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
@@ -41,8 +41,14 @@ async def get_weather(city: str):
 
         location = geo_data["results"][0]
 
-        timezone_str = location["timezone"]
-        tz = ZoneInfo(timezone_str)
+        timezone_str = location.get("timezone") or "UTC"
+        try:
+            tz = ZoneInfo(timezone_str)
+        except (ZoneInfoNotFoundError, ValueError):
+            # Fallback to UTC if timezone is unrecognized or invalid
+            timezone_str = "UTC"
+            tz = ZoneInfo("UTC")
+
         now = datetime.now(tz)
         local_time = now.isoformat(timespec="minutes")
 
